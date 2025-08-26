@@ -1,0 +1,37 @@
+doPCA <- function(peaktable, annot, x, peaktable_name, isSample){
+
+    require(vegan)
+    require("Rtsne")
+    isSample2 <- isSample[which(!annot[1, isSample] %in% c("M3-5","ERED", "NorQC"))]
+    
+    sample_names <- as.character(unlist(colnames(peaktable)))  # Set names for matrix
+    class_info <- as.character(unlist(annot[1,]))
+    
+    #set sample names for PCA matrix
+    PCA_sample_names <- as.character(unlist(colnames(peaktable[, isSample2])))
+    PCA_class_info <- as.character(unlist(annot[1, PCA_sample_names]))
+    class_groups <- unique(PCA_class_info)
+  
+    # Perform PCA
+    pca_result <- prcomp(t(peaktable[, isSample2]), scale. = FALSE) #check whether scale funciton is screwing with the PCA plots
+    #tSNE <- Rtsne(t(peaktable[, isSample2]), dims = 2, perplexity = 25, verbose = TRUE, max_iter = 10000)
+    # Extract PCA scores for the first two principal components
+    pca_scores <- as.data.frame(pca_result$x[, 1:2])
+    ci <- as.factor(PCA_class_info)
+    #Omit certain classes if necessary
+    #classes_to_omit <- c("QC", "M3-5", "ERED", "NorQC")
+    #pca_scores_filtered <- pca_scores[!pca_scores$Class %in% classes_to_omit, ]
+    
+    # Explain variance, Plot PCA results, comparison of data as boxplot
+    var.e <- round(summary(pca_result)$importance[2, 1:2]*100, 1)
+    png(paste0("Peaktable_",peaktable_name,"Step_",x, ".png"), width = 1024, height = 800)
+    op <- par(mfrow = c(1, 1))
+    #boxplot(peaktable[, isSample2])
+    plot(pca_scores,
+         main = peaktable_name,
+         col = as.numeric(ci), ylab = paste0("PC2 ", var.e[2], "%"), xlab = paste0("PC1 ", var.e[1], "%"), pch = c(5, 15, 19)[1+(as.numeric(ci)%/%6)])
+    ordiellipse(pca_result, PCA_class_info, conf=0.9,col = unique(as.numeric(ci)))
+    legend("topleft", levels(ci), col = as.numeric(as.factor(levels(ci))), pch = c(5, 15, 19)[1+(as.numeric(as.factor(levels(ci)))%/%6)], ncol = 3)
+    #plot(tSNE$Y[, 1:2], col = as.numeric(ci), ylab = paste0("PC2 ", var.e[2], "%"), xlab = paste0("PC1 ", var.e[1], "%"), pch = c(5, 15, 19)[1+(as.numeric(ci)%/%6)])
+    dev.off()
+}
