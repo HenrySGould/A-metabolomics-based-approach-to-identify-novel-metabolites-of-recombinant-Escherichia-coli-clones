@@ -1,0 +1,165 @@
+merged_peaktables <- list()
+
+for (mode in modes) {
+  for (extraction in extractions) {
+    
+    peaktables_to_merge <- list()
+    class_row_named <- list()
+    
+    for (block in blocks) {
+      entry <- result[[block]][[mode]][[extraction]]
+      if (is.null(entry)) next
+      
+      peaktable <- entry$peaktable
+      annot <- entry$annotation
+      
+      sample_cols <- grep("Area:", colnames(peaktable))
+      if (length(sample_cols) == 0) next
+      
+      # Remove selected samples
+      sample_names <- as.character(annot[1, sample_cols])
+      keep_idx <- !(sample_names %in% c("NorQC", "ERED", "M3-5", "QC"))
+      sample_cols <- sample_cols[keep_idx]
+      sample_names <- sample_names[keep_idx]
+      
+      if (length(sample_cols) == 0) next
+      
+      # Keep only the "Name" column
+      metadata_df <- peaktable[, "Name", drop = FALSE]
+      sample_df <- peaktable[, sample_cols, drop = FALSE]
+      
+      # Rename sample columns to include the block
+      renamed_cols <- paste(block, colnames(sample_df), sep = "_")
+      colnames(sample_df) <- renamed_cols
+      
+      # Create corresponding class info
+      sample_classes <- as.character(annot[1, sample_cols])
+      names(sample_classes) <- renamed_cols
+      class_row_named <- c(class_row_named, sample_classes)
+      
+      full_df <- cbind(metadata_df, sample_df)
+      peaktables_to_merge[[block]] <- full_df
+    }
+    
+    if (length(peaktables_to_merge) == 0) next
+    
+    # Merge all peaktables by "Name"
+    merged_df <- Reduce(function(x, y) merge(x, y, by = "Name", all = TRUE), peaktables_to_merge)
+    
+    # Construct the first row for class labels
+    class_row <- rep(NA, ncol(merged_df))
+    names(class_row) <- colnames(merged_df)
+    for (colname in names(class_row_named)) {
+      if (colname %in% names(class_row)) {
+        class_row[colname] <- class_row_named[[colname]]
+      }
+    }
+    
+    # Combine class row and merged data
+    final_df <- rbind(class_row, merged_df)
+    rownames(final_df) <- NULL
+    
+    list_name <- paste(mode, extraction, sep = "_")
+    merged_peaktables[[list_name]] <- final_df
+    
+    cat("Created:", list_name, "with", nrow(final_df) - 1, "compounds (excluding NorQC)\n")
+  }
+}
+
+
+## check for unique metabolites above a threshold 
+
+# Set threshold
+threshold <- 1e6  # You can change this if needed
+
+# Make list to store processed peaktables
+processed_tables <- list()
+
+# Loop through each peaktable in merged_peaktables
+for (table_name in names(merged_peaktables)) {
+  table <- merged_peaktables[[table_name]]
+  
+  # Copy to modify
+  processed_df <- table
+  
+  # Extract the class row (first row, excluding "Name")
+  class_row <- as.character(processed_df[1, ])
+  
+  # Process each data cell starting from row 2
+  for (i in 2:nrow(processed_df)) {
+    for (j in 2:ncol(processed_df)) {
+      value <- as.numeric(processed_df[i, j])
+      if (!is.na(value) && value > threshold) {
+        processed_df[i, j] <- class_row[j]
+      } else {
+        processed_df[i, j] <- NA
+      }
+    }
+  }
+  
+  # Save the processed table to list
+  processed_tables[[table_name]] <- processed_df
+}
+
+# Make list to store abundant metabolites per processed table
+abundmetab_list <- list()
+
+# Loop over each processed peaktable to find metabolites uniquely abundant in one class
+for (table_name in names(processed_tables)) {
+  processed_df <- processed_tables[[table_name]]
+
+  # Create temporary storage for rows that meet criteria
+  metab_vec <- list()
+
+  for (i in 2:nrow(processed_df)) {
+    row_vals <- as.character(processed_df[i, -1])  # Skip "Name" column
+    unique_classes <- unique(na.omit(row_vals))
+
+    # Proceed only if there is exactly one class
+    if (length(unique_classes) == 2) {
+      class_of_interest <- unique_classes#[1]
+
+      # Count how many times this class appears in the row
+      num_occurrences <- sum(row_vals %in% class_of_interest, na.rm = TRUE)
+
+      if (num_occurrences >= 3) {
+        metabolite <- processed_df[i, "Name"]
+        metab_vec[[length(metab_vec) + 1]] <- data.frame(
+          Metabolite = metabolite,
+          Class = class_of_interest,
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+
+  # Combine and save
+  if (length(metab_vec) > 0) {
+    abund_df <- do.call(rbind, metab_vec)
+  } else {
+    abund_df <- data.frame(Metabolite = character(), Class = character())
+  }
+
+  abundmetab_list[[table_name]] <- abund_df
+}
+
+
+### Create summary of data###
+
+abund_summary <- do.call(rbind, lapply(names(abundmetab_list), function(table_name) {
+  df <- abundmetab_list[[table_name]]
+  if (nrow(df) == 0) return(NULL)
+
+  parts <- unlist(strsplit(table_name, "_"))
+  mode <- parts[1]
+  extraction <- parts[2]
+
+  df$Mode <- mode
+  df$Extraction <- extraction
+  df$Table <- table_name
+
+  return(df)
+}))
+
+### save summary as csv ###
+write.csv(abund_summary, "abundant_metabolites_summary2.csv", row.names = FALSE)
