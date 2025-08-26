@@ -1,0 +1,117 @@
+# Set directory
+setwd("C:/Data/HG Results (SMILES)")
+library(gplots)
+
+# Source Wilcox comparison function
+source("wilcox_comparison_function.R")
+
+# Read in peaktables
+#red_peaktable <- read.table(
+#  "reduced_Block A_Hilic_POS.txt", 
+#  sep = "\t", quote = "", na.strings = "NA"
+#)
+#class_info <- as.character(red_peaktable[2, ])
+#classes <- unique(class_info)
+
+#Peaktables
+
+red_peaktable <- result[["Block D"]][["Hilic_POS"]][["Karl"]][["peaktable"]]
+wilcox_annot <- result[["Block D"]][["Hilic_POS"]][["Karl"]][["annotation"]]
+red_peaktable <- rbind(wilcox_annot[1,], red_peaktable)
+
+wilcox_class_info <- unique(as.character(wilcox_annot[1, ]))
+
+# Create a list to store subsets
+subset_tables <- list()
+
+# Subset the data into tables for each class
+for (class_name in wilcox_class_info) {
+  if (is.na(class_name)) next
+  
+  # Find the column indices that match the current class name
+  sample_col <- which(red_peaktable[1, ] == class_name)
+  
+  # Subset the data frame based on the class
+  subset_data <- red_peaktable[-1, sample_col, drop = FALSE]
+  
+  # Add the subset data to the list
+  subset_tables[[as.character(class_name)]] <- subset_data
+}
+
+# Define groups to omit
+omit_group <- c("pET28a", "NA", "NorQC", "M3-5", "QC")
+control_group <- "pET28a"
+
+# Create a list to store Wilcoxon results
+wilcox_results <- list()
+
+# Perform Wilcoxon tests
+for (class_name in names(subset_tables)) {
+  # Skip omitted groups
+  if (is.na(class_name) || class_name %in% omit_group) next
+  
+  # Retrieve subset data
+  subset_data <- as.data.frame(lapply(subset_tables[[class_name]], as.numeric))
+  
+  # Retrieve control data
+  control_data <- as.data.frame(lapply(subset_tables[[control_group]], as.numeric))
+  
+  # Call significant test function
+  results_data <- compare_classes(subset_data, control_data, "table", control_group)
+  
+  # Store results
+  wilcox_results[[class_name]] <- results_data
+}
+
+# Initialize a heatmap matrix
+num_comparisons <- length(wilcox_results)
+comparison_names <- names(wilcox_results)
+
+heatmap_matrix <- matrix(
+  0, 
+  nrow = nrow(red_peaktable[-1, ]), 
+  ncol = num_comparisons
+)
+metabolitenames <- red_peaktable[-1, 1]
+rownames(heatmap_matrix) <- metabolitenames
+colnames(heatmap_matrix) <- comparison_names
+
+# Update heatmap matrix with regulation status
+for (comparison_name in comparison_names) {
+  current_results <- wilcox_results[[comparison_name]]
+  
+  # Ensure rownames in results align with heatmap_matrix
+  rownames_to_update <- intersect(rownames(heatmap_matrix), rownames(current_results))
+  
+  # Update the matrix
+  heatmap_matrix[rownames_to_update, comparison_name] <- ifelse(
+    current_results[rownames_to_update, "fold_change"] >= 2, 
+    1, 
+    ifelse(current_results[rownames_to_update, "fold_change"] <=-10 , -1, 0)
+  )
+}
+
+#Check heatmap dimensions
+
+cat("Heatmap Matrix Dimensions:", dim(heatmap_matrix), "\n")
+cat("Number of Comparisons:", num_comparisons, "\n")
+cat("Wilcoxon Results Names:", names(wilcox_results), "\n")
+cat("Metabolitenames Length:", length(metabolitenames), "\n")
+cat("Row Names Heatmap Matrix:", length(rownames(heatmap_matrix)), "\n")
+
+# Define a color palette
+heatmap_colors <- colorRampPalette(c("red", "white", "green"))(3)
+
+# Generate and save the heatmap
+png("Block A Hilic Pos Karl Wilcoxon Heatmap.png", width = 4000, height = 4000, res = 600, pointsize = 4)
+heatmap(
+  heatmap_matrix,
+  Rowv = NA, Colv = NA,              # Disable clustering
+  col = heatmap_colors,              # Use the color palette
+  scale = "none",
+  labRow = rownames(heatmap_matrix),
+  labCol = colnames(heatmap_matrix),
+  margins = c(5, 15), 
+  main = "Combined Heatmap Block A Hilic Pos Karl significance test compared to pET28a"
+)
+dev.off()
