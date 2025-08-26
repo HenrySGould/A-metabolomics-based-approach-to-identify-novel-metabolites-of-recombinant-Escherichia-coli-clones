@@ -1,0 +1,216 @@
+# Land mark clones (in each experimental block)
+#- ERED
+#- M3-5
+#- pET28a
+
+#- 2 extractions (ACN, KARL), 4 chromatochraphies
+#- 2 blocks
+
+#Each sample is in there ~ 8 times 
+#In the metadata, some samples are to be removed (0) or kept (1)
+
+#2 slides per excel file: Compounds & Metadata
+
+# Function to calculate the total correlation for a combination of samples
+filterByCor <- function(peaktable, qcColumns, threshold = 0.95, nToKeep = 8) {
+  cMeansQCs <- apply(cor(peaktable[,qcColumns], use = "pair"), 1, mean)
+  plot(cMeansQCs, col = as.numeric(cMeansQCs < threshold) + 1, pch = 19)
+  abline(h = threshold)
+  if(any(cMeansQCs < threshold)) {
+    iBT <- which(cMeansQCs < threshold)
+    if((length(qcColumns) - length(iBT)) >= nToKeep) { # We're left with more than 8 QCs
+      cat("QCs variable, removing",length(iBT) , "/", length(qcColumns), "\n")
+      qcColumns <- qcColumns[-iBT]
+    } else { # We would be having less than 8 QCs
+      cat("QCs way too variable, keeping highest ",nToKeep,"\n")
+      sorted <- sort(cMeansQCs, index.return=TRUE, decreasing = TRUE)
+      qcColumns <- qcColumns[sorted$ix[1:nToKeep]]
+    }
+  }
+  return(qcColumns)
+}
+
+
+collapseByName <- function(peaktable, qcColumns){
+  snames <- na.omit(unique(peaktable[, "Name"]))
+  tokeep = c()
+  for(name in snames){
+    iix <- which(peaktable[, "Name"] == name)
+    if(length(iix) == 1){
+      tokeep = c(tokeep, iix)
+    }else{
+      qcvals <- peaktable[iix, qcColumns]
+      qcvals <- apply(qcvals, 2, as.numeric) #need to define qcvals as numeric
+      qcmean <- apply(qcvals, 1, mean)
+      maxQC <- which.max(qcmean)
+      maxQCvalue <- qcmean[maxQC]
+      if(any(qcmean < (maxQCvalue / 10))){
+        tokeep = c(tokeep, iix[- which(qcmean < (maxQCvalue / 10))]) # Keep the one with the 10x QC abundance
+      }else{
+        rtvalues <- as.numeric(peaktable[iix, "RT.[min]"])
+        sortedrt <- sort(rtvalues, index.return=TRUE)
+        rtgaps <- diff(sortedrt$x)
+        if(all(rtgaps < 0.5)){
+          tokeep <- c(tokeep, iix)
+        }else{
+          matches <- as.numeric(peaktable[iix, "mzCloud.Best.Match"])
+          tokeep <- c(tokeep, iix[which.max(qcmean)])
+        }
+      }
+    }
+  }
+  return(tokeep)
+}
+
+## After running collapse by name, we might have entries left that are in there multiple times
+## We need to sum the values together
+collapseValues <- function(peaktable, dataColumns){
+  allnames <- peaktable[which(na.omit(duplicated(peaktable[, "Name"]))), "Name"]
+  snames <- na.omit(unique(allnames))
+  newpeaktable <- c()
+  cat("Merging:", length(allnames), "rows, containing", length(snames), " unique metabolites\n")
+  for(name in snames){
+    iix <- which(peaktable[, "Name"] == name)
+    i <- iix[which.max(as.numeric(peaktable[iix, "mzCloud.Best.Match"]))]
+    newEntry <- peaktable[i, ]
+    newEntry[dataColumns] <- apply(peaktable[iix, dataColumns], 2, function(x){ sum(as.numeric(x)) })
+    newpeaktable <- rbind(newpeaktable, newEntry)
+  }
+
+  onlyOnce <- names(which(table(peaktable[, "Name"]) == 1))
+  cat("Copy the remaining", length(onlyOnce), "unique entries\n")
+  for(name in onlyOnce){
+    i <- which(peaktable[, "Name"] == name)
+    newpeaktable <- rbind(newpeaktable, peaktable[i, ])
+  }
+  return(newpeaktable)
+}
+
+setwd("C:/Data/HG Results (SMILES)")
+source("PCA function.R")
+#setwd("/home/rqdt9/Data/Henry/PeakTables_Dec23")
+
+
+blocks <- c("Block A", "Block B", "Block C", "Block D")
+extractions <- c("ACN", "Karl")
+modes <- c("Hilic_POS", "Hilic_NEG", "RP_POS", "RP_NEG")
+
+filter.mzCloud = 80
+filter.msDepth = 2
+
+library("openxlsx")
+library("preprocessCore")
+library("ellipse")
+
+cV <- function(x){
+  res <- vector("list", length(x))
+  names(res) <- x
+  return(res)
+}
+
+
+#blocks <- "Block A"
+#extractions <- "ACN"
+#modes <- "Hilic_POS"
+
+result <- cV(blocks)
+for(block in blocks){
+  result[[block]] <- cV(modes)
+  for(mode in modes){
+    result[[block]][[mode]] <- cV(extractions)
+    for(extraction in extractions){
+      filename_short <- paste0(block,"_",mode,"_",extraction)
+      filename <- paste0("./", block, "/", mode, "/", extraction, "_", mode, ".xlsx")
+      cat("Loading:", filename, "\n")
+      peaktable <- read.xlsx(filename, sheet = "Compounds")
+      annot <- read.xlsx(filename, sheet = "Metadata")
+
+      cat("Loaded a peaktable with", nrow(peaktable), "entries\n")
+      #doPCA(peaktable, annot,  1) 
+      # Look at the samples
+      infoC <- grep("Area:", colnames(peaktable))
+      # Filter out the Shitty ones (listed as 0)
+      infoC <- infoC[which(annot[2, infoC] == 1)]
+
+      samples <- as.character(annot[1, infoC])
+
+      # QCs
+      isQC <- infoC[which(samples == "QC")]
+      isSample <- infoC[which(samples != "QC")]
+      #peaktable[,isSample] <- normalize.quantiles(as.matrix(log2(peaktable[,isSample])))
+      #doPCA(peaktable[, isSample], annot, 2) 
+      
+      # Make sure there are no NAs in the peaktable QCs
+      toR <- which(apply(apply(peaktable[, isQC], 1, is.na),2, sum) > 0)
+      if(length(toR) > 0) {
+        cat("Warning QC values contain NA !!!!\n")
+        peaktable <- peaktable[-toR,]
+      }
+      #doPCA(peaktable[, isSample], annot, 3) 
+      
+      # QC Variability filter (make sure we only use good QCs)
+      isQCnew <- filterByCor(peaktable, isQC)
+
+      # Take the QCs and compute relative standard deviation to the mean (keep everything within 25%)
+      sds <- apply(peaktable[,isQCnew], 1, sd)
+      mean <- apply(peaktable[,isQCnew], 1, mean)
+      ridx <- which((sds/mean) * 100 < 25)
+
+      # Subset the peak table
+      peaktable <- peaktable[ridx, ]
+      cat("After checking Variability:", nrow(peaktable), "entries\n")
+      #doPCA(peaktable[, isSample], annot, 4)
+
+      #write.table(peaktable, "After_Variability.txt", sep = "\t", quote=FALSE, row.names=FALSE)
+
+      #Make sure we always have an MZcloud match:
+      noMZcloud <- which(is.na(peaktable[, "mzCloud.Best.Match"]))
+      peaktable <- peaktable[-noMZcloud,]
+      cat("Removed ", length(noMZcloud), " entries (no mzCloud match), now:", nrow(peaktable), "entries\n")
+      #doPCA(peaktable[, isSample], annot, 5)
+      
+      # Colapse similar features, remove the ones not reliable (bad QC)
+      tokeep <- collapseByName(peaktable, isQCnew)
+      peaktable <- peaktable[tokeep,]
+      cat("After de-duplication:", nrow(peaktable), "entries\n")
+      #doPCA(peaktable[, isSample], annot, 6)
+      peaktable <- collapseValues(peaktable, c(isSample, isQC))
+      cat("After Similar feature collapse:", nrow(peaktable), "entries\n")
+      #doPCA(peaktable[, isSample], annot, 7)
+      write.table(peaktable, "After_DeDup.txt", sep = "\t", quote=FALSE, row.names=FALSE)
+      
+      peaktable[,c(isQCnew, isSample)] <- normalize.quantiles(as.matrix(log2(peaktable[, c(isQCnew, isSample)])))
+      
+      # Now do the auto-scaling
+      peaktable[, c(isQCnew, isSample)] <- apply(peaktable[, c(isQCnew, isSample)], 2, function(x){
+      return((x - mean(x)) / sd(x))
+      })
+
+      # Keep the MS2 scans only & mzCloud.Best.Match > 70 %
+      peaktable <- peaktable[which(peaktable[, "MS2"] != "No MS2"),]
+      #doPCA(peaktable[, isSample], annot, 8)
+      cat("After removing MS1 scans:", nrow(peaktable), "entries\n")
+      peaktable <- peaktable[which(peaktable[, "mzCloud.Best.Match"] >= filter.mzCloud ),]
+      doPCA(peaktable, annot, 9, filename_short, isSample)
+      cat("After checking mzCloud:", nrow(peaktable), "entries\n")
+      
+      # Remove rows where Deltamass is >5 ppm
+      
+      peaktable <- peaktable[
+        as.numeric(peaktable[,"Annot..DeltaMass.[Da]"]) >= -5 &
+          as.numeric(peaktable[,"Annot..DeltaMass.[Da]"]) <= 5,
+      ]
+
+      # Keep only those columns with an active code
+      cidx <- which(annot[2,] == 1)
+      peaktable <- peaktable[, cidx]
+      annot <- annot[, cidx]
+
+      result[[block]][[mode]][[extraction]]$peaktable <- peaktable
+      result[[block]][[mode]][[extraction]]$annotation <- annot
+      cat(filename, "loaded, with", nrow(peaktable), "entries passing QC < 25%\n")
+
+      write.table(rbind(annot[-2,], peaktable), file = paste0("reduced_", block, "_", mode, "_", extraction, ".txt"), sep = "\t", quote=FALSE, row.names=FALSE, fileEncoding = "UTF-8")
+    }
+  }
+}
